@@ -6,8 +6,8 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REGISTRY: 121291936594.dkr.ecr.us-east-1.amazonaws.com
-  ECR_REPOSITORY: repo-data
+  ECR_REGISTRY: 181331841510.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: innovatech-db
 
 jobs:
   build-push-deploy:
