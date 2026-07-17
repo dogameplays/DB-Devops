@@ -1,4 +1,4 @@
-name: Database Deploy to ECR and EC2
+name: Database Deploy to ECR and RDS
 
 on:
   push:
@@ -6,11 +6,14 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REGISTRY: 181331841510.dkr.ecr.us-east-1.amazonaws.com
-  ECR_REPOSITORY: innovatech-db
+  ECR_REGISTRY: 061532289995.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: innovatech/db
+  RDS_ENDPOINT: innovatech-rds.cjctjveok13v.us-east-1.rds.amazonaws.com
+  DB_NAME: innovatech_ops
+  DB_USER: innovatech_user
 
 jobs:
-  build-push-deploy:
+  migrate:
     runs-on: ubuntu-latest
     
     permissions:
@@ -28,11 +31,6 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Ensure ECR repository exists
-        run: |
-          aws ecr describe-repositories --repository-names $ECR_REPOSITORY --region $AWS_REGION >/dev/null 2>&1 || \
-          aws ecr create-repository --repository-name $ECR_REPOSITORY --region $AWS_REGION
-      
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
@@ -52,39 +50,22 @@ jobs:
         run: |
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "✅ Image pushed: $ECR_REGISTRY/$ECR_REPOSITORY:latest"
-      
-      - name: Get Database Instance ID
-        id: get-instance-id
+          echo "Image pushed: $ECR_REGISTRY/$ECR_REPOSITORY:latest"
+
+      - name: Run migrations against RDS
         run: |
-          INSTANCE_ID=$(aws ec2 describe-instances \
-            --filters "Name=private-ip-address,Values=${{ secrets.EC2_DB_HOST }}" \
-            --query 'Reservations[0].Instances[0].InstanceId' \
-            --output text)
-          echo "instance-id=$INSTANCE_ID" >> $GITHUB_OUTPUT
-          echo "Instance ID: $INSTANCE_ID"
-      
-      - name: Deploy to EC2 Database via SSM
-        env:
-          INSTANCE_ID: ${{ steps.get-instance-id.outputs.instance-id }}
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: latest
-        run: |
-          aws ssm send-command \
-            --document-name "AWS-RunShellScript" \
-            --parameters "commands=[
-              'mkdir -p /mnt/mysql_data && chmod 777 /mnt/mysql_data',
-              'aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}',
-              'docker pull ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}',
-              'docker stop innovatech_db || true',
-              'docker rm innovatech_db || true',
-              'docker run -d --name innovatech_db -p 3306:3306 -v /mnt/mysql_data:/var/lib/mysql -e MYSQL_DATABASE=${{ secrets.MYSQL_DATABASE }} -e MYSQL_USER=${{ secrets.MYSQL_USER }} -e MYSQL_PASSWORD=${{ secrets.MYSQL_PASSWORD }} -e MYSQL_ROOT_PASSWORD=${{ secrets.MYSQL_ROOT_PASSWORD }} ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}',
-              'sleep 10',
-              'docker ps',
-              'docker logs innovatech_db | tail -20',
-              'ls -la /mnt/mysql_data | head -10'
-            ]" \
-            --instance-ids "$INSTANCE_ID" \
-            --region ${{ env.AWS_REGION }}
-          
-          echo "✅ Database deployment command sent via SSM"
+          docker run --rm --entrypoint mysql \
+            mysql:8.0 \
+            -h ${{ env.RDS_ENDPOINT }} \
+            -u ${{ env.DB_USER }} \
+            -pinnovatech_password \
+            ${{ env.DB_NAME }} < ./schema.sql || true
+
+          docker run --rm --entrypoint mysql \
+            mysql:8.0 \
+            -h ${{ env.RDS_ENDPOINT }} \
+            -u ${{ env.DB_USER }} \
+            -pinnovatech_password \
+            ${{ env.DB_NAME }} < ./seed.sql || true
+
+          echo "Migrations applied to RDS"
